@@ -48,6 +48,32 @@ coverage.xml
 *.cover
 *.py.cover
 .hypothesis/
+
+# Security and sensitive files
+config/config.local.yaml
+config/config.prod.yaml
+.env
+.env.local
+.env.production
+*.key
+*.pem
+api_keys.txt
+
+# Data files (to prevent large datasets from being committed)
+data/
+!data/.gitkeep
+logs/
+!logs/.gitkeep
+
+# Collection results (JSON files)
+collection_results/
+*.json
+!config/*.example.json
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
 .pytest_cache/
 cover/
 

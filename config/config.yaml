@@ -1,0 +1,97 @@
+# ThreatSync 主配置文件
+# API配置
+apis:
+  # GitHub API配置
+  github:
+    token: ""  # 在config.local.yaml中设置真实token
+    rate_limit: 5000
+    base_url: "https://api.github.com"
+  
+  # NVD API配置（遵循官方最佳实践）
+  nvd:
+    api_key: ""  # 在config.local.yaml中设置真实API key
+    base_url: "https://services.nvd.nist.gov/rest/json/cves/2.0"
+    # API速率限制配置（基于官方文档）
+    rate_limit:
+      # 无API Key: 5 requests per 30 seconds
+      # 有API Key: 50 requests per 30 seconds
+      requests_per_30s: 5  # 默认无API Key的限制
+      sleep_between_requests: 6  # 官方推荐6秒间隔
+    # 分页配置
+    pagination:
+      results_per_page: 2000  # 官方默认优化值
+      max_total_results: 50000  # 防止无限循环
+  
+  # OSV API配置
+  osv:
+    base_url: "https://api.osv.dev/v1"
+
+# HTTP客户端配置
+http:
+  # 请求超时（秒）
+  timeout: 30
+  # 最大重试次数
+  max_retries: 3
+  # User-Agent轮换
+  use_random_user_agent: true
+  
+  # 代理配置
+  proxy:
+    enabled: false
+    http: ""
+    https: ""
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/threatsync.log"
+  max_size: "10MB"
+  backup_count: 5
+
+# 调度配置
+schedule:
+  # 结构化数据采集间隔（小时） - 遵循NVD最佳实践，不少于2小时
+  structured_interval: 2
+  # 非结构化数据采集间隔（小时）
+  unstructured_interval: 12
+  
+  # 初始数据获取配置
+  initial_collection:
+    # 首次运行时回溯的天数
+    days_back: 30
+    # 批处理大小
+    batch_size: 2000
+
+# 数据存储配置 - 只保存原始JSON文件
+storage:
+  # 数据根目录
+  data_dir: "data"
+  
+  # 结构化数据存储路径
+  structured_data:
+    nvd: "data/structured/nvd"
+    github: "data/structured/github" 
+    osv: "data/structured/osv"
+  
+  # 非结构化数据存储路径
+  unstructured_data:
+    cnvd: "data/unstructured/cnvd"
+  
+  # 采集结果存储路径
+  collection_results: "data/collection_results"
+  
+  # 文件组织方式
+  file_organization:
+    # 按日期分组：daily, monthly, yearly
+    group_by: "daily"
+    # 文件命名格式
+    filename_format: "{source}_{date}_{timestamp}.json"
+    # 压缩旧文件（天数）
+    compress_after_days: 30
+  
+  # 数据保留策略
+  retention:
+    # 保留天数（0表示永久保留）
+    retention_days: 365
+    # 清理任务执行间隔（小时）
+    cleanup_interval: 24

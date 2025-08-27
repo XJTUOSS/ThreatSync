@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
-from .models.vulnerability import VulnerabilityData, CollectionResult
-from .utils import logger
+from .vulnerability import VulnerabilityData, CollectionResult
+from ..utils import logger
 
 
 class DatabaseManager:
@@ -41,11 +41,11 @@ class DatabaseManager:
         source = vulnerability.source.value
         
         # 结构化数据源
-        if source in ['nvd', 'github', 'osv']:
-            base_dir = self.structured_path / source
+        if source in ['NVD', 'GITHUB', 'OSV']:
+            base_dir = self.structured_path / source.lower()
         # 非结构化数据源
-        elif source in ['cnvd']:
-            base_dir = self.unstructured_path / source
+        elif source in ['CNVD']:
+            base_dir = self.unstructured_path / source.lower()
         else:
             base_dir = self.structured_path / 'other'
             base_dir.mkdir(exist_ok=True)
@@ -66,8 +66,8 @@ class DatabaseManager:
             filename = f"{vulnerability.id}.json"
             file_path = storage_path / filename
             
-            # 转换为字典并保存
-            data = vulnerability.dict()
+            # 使用 pydantic 的 json() 方法来正确序列化
+            data = json.loads(vulnerability.json())
             data['saved_time'] = datetime.now().isoformat()
             
             with open(file_path, 'w', encoding='utf-8') as f:
@@ -97,7 +97,8 @@ class DatabaseManager:
             filename = f"{result.source}_{timestamp}.json"
             file_path = self.collection_results_path / filename
             
-            data = result.dict()
+            # 使用 pydantic 的 json() 方法来正确序列化
+            data = json.loads(result.json())
             data['saved_time'] = datetime.now().isoformat()
             
             with open(file_path, 'w', encoding='utf-8') as f:

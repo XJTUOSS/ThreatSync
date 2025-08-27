@@ -2,7 +2,7 @@
 ThreatSync - 威胁情报采集工具
 """
 from .main import ThreatSyncEngine, main
-from .database import DatabaseManager
+from .models.database import DatabaseManager
 from .models.vulnerability import VulnerabilityData, CollectionResult
 from .utils import ConfigManager, logger
 

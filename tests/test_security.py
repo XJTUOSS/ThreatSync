@@ -10,8 +10,8 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.utils.config import ConfigManager
-from src.utils import logger
+from ThreatSync.utils.config import ConfigManager
+from ThreatSync.utils import logger
 
 def test_config_security():
     """测试配置安全性"""

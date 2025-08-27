@@ -25,15 +25,23 @@ class OSVCollector(BaseCollector):
         self.base_url = self.api_config.get('base_url', 'https://api.osv.dev/v1')
         self.http_client = RequestsUtil(config_manager.get_crawler_config())
     
-    def collect(self, ecosystems: List[str] = None, page_size: int = 1000, **kwargs) -> List[VulnerabilityData]:
+    def collect(self, ecosystems: List[str] = None, page_size: int = 1000, 
+                collect_all: bool = False, **kwargs) -> List[VulnerabilityData]:
         """
         采集OSV数据
         
         Args:
             ecosystems: 生态系统列表，如['PyPI', 'npm', 'Go', 'Maven']
             page_size: 页面大小
+            collect_all: 是否采集所有生态系统（忽略ecosystems参数）
         """
-        if ecosystems is None:
+        if collect_all:
+            # 采集所有支持的生态系统
+            ecosystems = ['PyPI', 'npm', 'Go', 'Maven', 'NuGet', 'RubyGems', 'crates.io', 
+                         'Packagist', 'ConanCenter', 'Rocky Linux', 'AlmaLinux', 'Ubuntu',
+                         'Debian', 'Alpine', 'SUSE', 'Red Hat', 'Android', 'GSD']
+            logger.info("开始采集OSV所有生态系统数据")
+        elif ecosystems is None:
             ecosystems = ['PyPI', 'npm', 'Go', 'Maven', 'NuGet', 'RubyGems', 'crates.io']
         
         logger.info(f"开始采集OSV数据，生态系统: {ecosystems}")

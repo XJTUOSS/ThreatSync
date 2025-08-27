@@ -12,38 +12,69 @@ class ConfigManager:
     
     def __init__(self, config_path: str = None):
         if config_path is None:
-            config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
+            # 优先使用本地配置文件
+            config_dir = Path(__file__).parent.parent.parent / "config"
+            self.local_config_path = config_dir / "config.local.yaml"
+            self.example_config_path = config_dir / "config.example.yaml"
+            # 向后兼容，如果指定了config_path则使用指定路径
+            self.config_path = config_dir / "config.yaml" if config_path is None else Path(config_path)
+        else:
+            self.config_path = Path(config_path)
+            self.local_config_path = self.config_path.parent / "config.local.yaml"
+            self.example_config_path = self.config_path.parent / "config.example.yaml"
         
-        self.config_path = Path(config_path)
-        self.local_config_path = self.config_path.parent / "config.local.yaml"
         self._config = None
         self.load_config()
     
     def load_config(self):
-        """加载配置文件（支持本地覆盖和环境变量）"""
+        """加载配置文件（优先使用本地配置）"""
         try:
-            # 加载主配置文件
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                self._config = yaml.safe_load(f)
-            
-            # 如果存在本地配置文件，合并配置
+            # 优先使用本地配置文件
             if self.local_config_path.exists():
                 with open(self.local_config_path, 'r', encoding='utf-8') as f:
-                    local_config = yaml.safe_load(f)
-                    self._merge_configs(self._config, local_config)
+                    self._config = yaml.safe_load(f)
+                    if self._config is None:
+                        self._config = {}
+                print(f"已加载本地配置: {self.local_config_path}")
+            
+            # 如果本地配置不存在，使用示例配置作为基础
+            elif self.example_config_path.exists():
+                with open(self.example_config_path, 'r', encoding='utf-8') as f:
+                    self._config = yaml.safe_load(f)
+                    if self._config is None:
+                        self._config = {}
+                print(f"已加载示例配置: {self.example_config_path}")
+            
+            # 如果都不存在，尝试加载旧的config.yaml（向后兼容）
+            elif self.config_path.exists():
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    self._config = yaml.safe_load(f)
+                    if self._config is None:
+                        self._config = {}
+                print(f"已加载配置文件: {self.config_path}")
+            
+            # 如果所有配置文件都不存在，使用默认配置
+            else:
+                print("未找到配置文件，使用默认配置")
+                self._config = self._get_default_config()
             
             # 应用环境变量覆盖
             self._apply_env_overrides()
             
-        except FileNotFoundError:
-            print(f"配置文件未找到: {self.config_path}")
-            self._config = self._get_default_config()
         except yaml.YAMLError as e:
             print(f"配置文件解析错误: {e}")
+            self._config = self._get_default_config()
+        except Exception as e:
+            print(f"加载配置文件时发生错误: {e}")
             self._config = self._get_default_config()
     
     def _merge_configs(self, base_config: dict, override_config: dict):
         """递归合并配置"""
+        if base_config is None:
+            return override_config
+        if override_config is None:
+            return base_config
+            
         for key, value in override_config.items():
             if key in base_config and isinstance(base_config[key], dict) and isinstance(value, dict):
                 self._merge_configs(base_config[key], value)
@@ -69,7 +100,26 @@ class ConfigManager:
                 'github': {
                     'token': '',
                     'rate_limit': 5000,
-                    'base_url': 'https://api.github.com'
+                    'base_url': 'https://api.github.com',
+                    'collection': {
+                        'default_method': 'rest',
+                        'supported_methods': ['rest', 'graphql', 'database'],
+                        'methods': {
+                            'rest': {
+                                'per_page': 100,
+                                'max_pages': 100
+                            },
+                            'graphql': {
+                                'per_page': 100,
+                                'max_pages': 50
+                            },
+                            'database': {
+                                'repo_url': 'https://github.com/github/advisory-database.git',
+                                'clone_timeout': 300,
+                                'shallow_clone': True
+                            }
+                        }
+                    }
                 },
                 'nvd': {
                     'api_key': '',

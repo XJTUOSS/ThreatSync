@@ -119,28 +119,10 @@ engine.collectors['cnvd'].collect(
 )
 ```
 
-### 生成的JSON文件格式
-
-采集的数据会保存为标准化的JSON格式：
-
-```json
-{
-  "id": "CNVD-2025-00001",
-  "sourceIdentifier": "cnvd.org.cn",
-  "published": "2025-08-07T12:00:00",
-  "lastModified": "2025-08-07T21:28:40",
-  "vulnStatus": "PUBLISHED",
-  "descriptions": [...],
-  "references": [...],
-  "cnvd": {
-    "title": "漏洞标题",
-    "severity": "HIGH",
-    "technicalDetails": {...}
-  }
-}
-```
-
 ## 参考资料
 
 - [NVD API Documentation](https://nvd.nist.gov/developers/start-here)
 - [NVD API Client Reference](https://github.com/eslerm/nvd-api-client.git)
+- [Github advisory database](https://github.com/github/advisory-database.git)
+- [Github graphql](https://docs.github.com/en/graphql/reference/queries#securityadvisories)
+- [Github API](https://docs.github.com/zh/rest/security-advisories/global-advisories?apiVersion=2022-11-28)

@@ -1,15 +1,12 @@
-"""
-主程序入口
-"""
 import schedule
 import time
 from pathlib import Path
 
 try:
     # 相对导入（作为包的一部分时）
-    from .utils import ConfigManager, logger
-    from .utils.file_storage import FileStorage
-    from .collectors import (
+    from ..utils import ConfigManager, logger
+    from ..utils.file_storage import FileStorage
+    from ..collectors import (
         NVDCollector, GitHubCollector, OSVCollector, CNVDCollector
     )
 except ImportError:
@@ -19,9 +16,9 @@ except ImportError:
     project_root = Path(__file__).parent.parent
     sys.path.insert(0, str(project_root))
     
-    from src.utils import ConfigManager, logger
-    from src.utils.file_storage import FileStorage
-    from src.collectors import (
+    from ThreatSync.utils import ConfigManager, logger
+    from ThreatSync.utils.file_storage import FileStorage
+    from ThreatSync.collectors import (
         NVDCollector, GitHubCollector, OSVCollector, CNVDCollector
     )
 
@@ -51,14 +48,40 @@ class ThreatSyncEngine:
     
     def _setup_logging(self):
         """设置日志"""
+        from ..utils.logger import ThreatSyncLogger
+        
         log_config = self.config_manager.get_logging_config()
         log_file = log_config.get('file', 'logs/threatsync.log')
+        log_level = log_config.get('level', 'INFO')
+        max_size = log_config.get('max_size', '10MB')
+        backup_count = log_config.get('backup_count', 5)
         
         # 创建日志目录
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         
-        logger.info("日志系统初始化完成")
+        # 重新初始化全局logger，使用配置文件中的设置
+        global logger
+        # 清除现有的handlers避免重复
+        for handler in logger.logger.handlers[:]:
+            logger.logger.removeHandler(handler)
+        
+        logger = ThreatSyncLogger(
+            name="ThreatSync",
+            level=log_level,
+            log_file=log_file,
+            max_size=max_size,
+            backup_count=backup_count,
+            enable_file_rotation=True,
+            enable_error_file=True
+        )
+        
+        logger.info("日志系统初始化完成", extra={
+            'log_file': log_file,
+            'level': log_level,
+            'max_size': max_size,
+            'backup_count': backup_count
+        })
     
     def collect_structured_data(self, sources: list = None, **kwargs):
         """采集结构化数据"""
@@ -71,7 +94,14 @@ class ThreatSyncEngine:
             if source in self.collectors:
                 try:
                     collector = self.collectors[source]
-                    result = collector.run_collection(**kwargs)
+                    
+                    # 为GitHub采集器传递特殊参数
+                    collection_kwargs = kwargs.copy()
+                    if source == 'github' and 'github_method' in kwargs:
+                        collection_kwargs['method'] = kwargs['github_method']
+                        logger.info(f"使用GitHub采集方式: {kwargs['github_method']}")
+                    
+                    result = collector.run_collection(**collection_kwargs)
                     
                     logger.info(f"{source.upper()} 数据采集完成，成功采集{result.successful}条")
                     
@@ -285,21 +315,23 @@ class ThreatSyncEngine:
                 source_count = 0
                 
                 if source_path.exists():
-                    for json_file in source_path.glob('*.json'):
-                        try:
-                            with open(json_file, 'r', encoding='utf-8') as f:
-                                file_data = json.load(f)
-                                if 'data' in file_data:
-                                    vulnerabilities = file_data['data']
-                                    source_count += len(vulnerabilities)
-                                    
-                                    # 统计严重性
-                                    for vuln in vulnerabilities:
-                                        severity = vuln.get('severity', 'UNKNOWN')
-                                        if severity in stats['by_severity']:
-                                            stats['by_severity'][severity] += 1
-                                        else:
-                                            stats['by_severity']['UNKNOWN'] += 1
+                    if source.lower() == 'nvd':
+                        # NVD使用新的CVE文件结构
+                        nvd_stats = self.file_storage.get_nvd_statistics()
+                        source_count = nvd_stats['total_cves']
+                        
+                        # 统计CVE文件中的严重性信息
+                        cve_files = self.file_storage.list_cve_files()
+                        for cve_file in cve_files:
+                            try:
+                                with open(cve_file, 'r', encoding='utf-8') as f:
+                                    file_data = json.load(f)
+                                    vuln_data = file_data.get('data', {})
+                                    severity = vuln_data.get('severity', 'UNKNOWN')
+                                    if severity in stats['by_severity']:
+                                        stats['by_severity'][severity] += 1
+                                    else:
+                                        stats['by_severity']['UNKNOWN'] += 1
                                 
                                 # 更新最后更新时间
                                 metadata = file_data.get('metadata', {})
@@ -308,10 +340,40 @@ class ThreatSyncEngine:
                                     if not stats['last_update'] or collected_at > stats['last_update']:
                                         stats['last_update'] = collected_at
                                         
-                        except Exception as e:
-                            logger.warning(f"读取统计文件{json_file}失败: {e}")
-                    
-                    stats['file_count'] += len(list(source_path.glob('*.json')))
+                            except Exception as e:
+                                logger.warning(f"读取CVE文件{cve_file}失败: {e}")
+                        
+                        stats['file_count'] += len(cve_files)
+                        
+                    else:
+                        # 其他数据源使用原有的批量文件结构
+                        for json_file in source_path.glob('*.json'):
+                            try:
+                                with open(json_file, 'r', encoding='utf-8') as f:
+                                    file_data = json.load(f)
+                                    if 'data' in file_data:
+                                        vulnerabilities = file_data['data']
+                                        source_count += len(vulnerabilities)
+                                        
+                                        # 统计严重性
+                                        for vuln in vulnerabilities:
+                                            severity = vuln.get('severity', 'UNKNOWN')
+                                            if severity in stats['by_severity']:
+                                                stats['by_severity'][severity] += 1
+                                            else:
+                                                stats['by_severity']['UNKNOWN'] += 1
+                                    
+                                    # 更新最后更新时间
+                                    metadata = file_data.get('metadata', {})
+                                    collected_at = metadata.get('collected_at')
+                                    if collected_at:
+                                        if not stats['last_update'] or collected_at > stats['last_update']:
+                                            stats['last_update'] = collected_at
+                                            
+                            except Exception as e:
+                                logger.warning(f"读取统计文件{json_file}失败: {e}")
+                        
+                        stats['file_count'] += len(list(source_path.glob('*.json')))
                 
                 stats['by_source'][source.upper()] = source_count
                 stats['total_vulnerabilities'] += source_count
@@ -354,101 +416,3 @@ class ThreatSyncEngine:
         except Exception as e:
             logger.error(f"获取数据信息失败: {e}")
             return {}
-
-
-def main():
-    """主函数"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='ThreatSync - 威胁情报采集工具')
-    parser.add_argument('--config', '-c', help='配置文件路径')
-    parser.add_argument('--mode', '-m', choices=['once', 'schedule'], 
-                       default='once', help='运行模式')
-    parser.add_argument('--sources', '-s', nargs='+', 
-                       choices=['nvd', 'github', 'osv', 'cnvd'],
-                       help='指定数据源')
-    parser.add_argument('--export', '-e', help='导出数据到指定路径')
-    parser.add_argument('--stats', action='store_true', help='显示统计信息')
-    parser.add_argument('--info', action='store_true', help='显示数据存储信息')
-    parser.add_argument('--cleanup', action='store_true', help='清理过期文件')
-    parser.add_argument('--days', '-d', type=int, default=7, help='回溯天数')
-    
-    args = parser.parse_args()
-    
-    try:
-        # 初始化引擎
-        engine = ThreatSyncEngine(args.config)
-        
-        if args.cleanup:
-            # 清理过期文件
-            engine.cleanup_old_files()
-            
-        elif args.info:
-            # 显示数据存储信息
-            info = engine.get_data_info()
-            print("\n=== ThreatSync 数据存储信息 ===")
-            print("\n结构化数据存储路径:")
-            for source, path in info['storage_paths']['structured_data'].items():
-                print(f"  {source.upper()}: {path}")
-            print("\n非结构化数据存储路径:")
-            for source, path in info['storage_paths']['unstructured_data'].items():
-                print(f"  {source.upper()}: {path}")
-            print(f"\n采集结果路径: {info['storage_paths']['collection_results']}")
-            
-            file_org = info.get('file_organization', {})
-            print(f"\n文件组织方式: {file_org.get('group_by', 'daily')}")
-            print(f"文件命名格式: {file_org.get('filename_format', '{source}_{date}_{timestamp}.json')}")
-            
-            retention = info.get('retention_policy', {})
-            print(f"\n数据保留策略:")
-            print(f"  保留天数: {retention.get('retention_days', 365)}")
-            print(f"  清理间隔: {retention.get('cleanup_interval', 24)} 小时")
-            
-        elif args.stats:
-            # 显示统计信息
-            stats = engine.get_statistics()
-            print("\n=== ThreatSync 统计信息 ===")
-            print(f"总漏洞数: {stats.get('total_vulnerabilities', 0)}")
-            print(f"总文件数: {stats.get('file_count', 0)}")
-            print("\n按数据源统计:")
-            for source, count in stats.get('by_source', {}).items():
-                print(f"  {source}: {count}")
-            print("\n按严重性统计:")
-            for severity, count in stats.get('by_severity', {}).items():
-                if count > 0:  # 只显示有数据的严重性等级
-                    print(f"  {severity}: {count}")
-            
-            last_update = stats.get('last_update')
-            if last_update:
-                print(f"\n最后更新: {last_update}")
-            
-        elif args.export:
-            # 导出数据
-            source_filter = args.sources[0] if args.sources and len(args.sources) == 1 else None
-            success = engine.export_data(args.export, source_filter)
-            if success:
-                print(f"数据导出成功: {args.export}")
-            else:
-                print(f"数据导出失败: {args.export}")
-                
-        elif args.mode == 'once':
-            # 单次采集
-            engine.run_full_collection(sources=args.sources, days_back=args.days)
-            
-        elif args.mode == 'schedule':
-            # 定时采集
-            engine.run_scheduler()
-            
-    except KeyboardInterrupt:
-        logger.info("用户中断程序执行")
-        print("\n程序已停止")
-    except Exception as e:
-        logger.error(f"程序执行失败: {e}")
-        print(f"错误: {e}")
-        return 1
-    
-    return 0
-
-
-if __name__ == "__main__":
-    main()

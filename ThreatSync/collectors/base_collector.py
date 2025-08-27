@@ -37,6 +37,9 @@ class BaseCollector(ABC):
         logger.info(f"开始采集 {self.source.value} 数据")
         
         try:
+            # 记录采集参数
+            logger.debug(f"采集参数: {kwargs}", extra={'source': self.source.value, 'params': kwargs})
+            
             self.collected_data = self.collect(**kwargs)
             successful = len(self.collected_data)
             failed = len(self.errors)
@@ -44,6 +47,15 @@ class BaseCollector(ABC):
             
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
+            
+            # 使用新的数据采集日志方法
+            logger.log_data_collection(
+                source=self.source.value,
+                collected_count=successful,
+                failed_count=failed,
+                duration=duration,
+                extra_info={'errors': self.errors if self.errors else None}
+            )
             
             result = CollectionResult(
                 source=self.source,
@@ -81,17 +93,29 @@ class BaseCollector(ABC):
                     logger.info(f"数据已保存到文件: {file_path}")
                     
                 except Exception as e:
-                    logger.error(f"保存数据失败: {e}")
+                    logger.error(f"保存数据失败", exception=e, extra={
+                        'source': self.source.value,
+                        'data_count': len(self.collected_data),
+                        'file_path': str(file_path) if 'file_path' in locals() else 'unknown'
+                    })
             
-            logger.info(f"采集完成 {self.source.value}: 成功={successful}, 失败={failed}, 耗时={duration:.2f}秒")
             return result
             
         except Exception as e:
             end_time = datetime.now()
             duration = (end_time - start_time).total_seconds()
-            error_msg = f"采集失败: {str(e)}"
-            logger.error(f"{self.source.value} {error_msg}")
-            logger.error(traceback.format_exc())
+            
+            # 使用增强的错误日志
+            logger.error(
+                f"采集失败: {self.source.value}",
+                exception=e,
+                extra={
+                    'source': self.source.value,
+                    'duration': duration,
+                    'params': kwargs,
+                    'collected_before_error': len(self.collected_data)
+                }
+            )
             
             return CollectionResult(
                 source=self.source,
@@ -101,14 +125,24 @@ class BaseCollector(ABC):
                 start_time=start_time,
                 end_time=end_time,
                 duration=duration,
-                errors=[error_msg]
+                errors=[f"采集失败: {str(e)}"]
             )
     
     def _handle_error(self, error: Exception, context: str = ""):
         """处理错误"""
         error_msg = f"{context}: {str(error)}" if context else str(error)
         self.errors.append(error_msg)
-        logger.error(f"{self.source.value} - {error_msg}")
+        
+        # 使用增强的错误日志
+        logger.error(
+            f"{self.source.value} - {error_msg}",
+            exception=error,
+            extra={
+                'source': self.source.value,
+                'context': context,
+                'error_count': len(self.errors)
+            }
+        )
     
     def _parse_severity(self, score: float) -> str:
         """根据分数解析严重性等级"""

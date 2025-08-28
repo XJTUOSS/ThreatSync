@@ -1,0 +1,6 @@
+[submodule "scripts/shell-scripts"]
+	path = scripts/shell-scripts
+	url = git@github.com:XJTUOSS/ShellScript.git
+[submodule "scripts/osv-script"]
+	path = scripts/osv-script
+	url = git@github.com:XJTUOSS/ShellScript.git

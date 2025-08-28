@@ -2,7 +2,6 @@
 文件存储工具 - 替代数据库存储，直接保存JSON文件
 """
 import json
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -150,7 +149,7 @@ class FileStorage:
         return str(base_path)
     
     def save_github_data_incremental(self, ghsa_id: str, data: Dict[str, Any], 
-                                    published_date: datetime = None) -> bool:
+                                    published_date: datetime = None, advisory_type: str = "reviewed") -> bool:
         """
         增量保存单个GitHub GHSA数据
         
@@ -158,6 +157,7 @@ class FileStorage:
             ghsa_id: GHSA ID
             data: 原始GitHub Advisory数据
             published_date: 发布日期
+            advisory_type: Advisory类型 ("reviewed" 或 "unreviewed")
             
         Returns:
             是否保存成功
@@ -170,10 +170,10 @@ class FileStorage:
             if published_date is None:
                 published_date = datetime.now()
             
-            # 构建目录路径: github/2025/08/
+            # 构建目录路径: github/reviewed/2025/08/ 或 github/unreviewed/2025/08/
             year = published_date.strftime('%Y')
             month = published_date.strftime('%m')
-            ghsa_dir = base_path / year / month
+            ghsa_dir = base_path / advisory_type / year / month
             ghsa_dir.mkdir(parents=True, exist_ok=True)
             
             # 构建文件路径: GHSA-xxxx-xxxx-xxxx.json

@@ -23,10 +23,12 @@ from ..utils import logger, RequestsUtil
 class GitHubCollector(BaseCollector):
     """GitHub Security Advisories数据采集器
     
-    支持两种采集方式：
+    支持三种采集方式：
     1. REST API - 通过GitHub API采集Security Advisories
     2. GraphQL API - 通过GraphQL获取详细信息
     3. Advisory Database - 克隆GitHub Advisory Database仓库
+       - 支持github-reviewed目录（经过GitHub审核的advisory）
+       - 支持unreviewed目录（未经审核的advisory）
     """
     
     def _get_source(self) -> DataSource:
@@ -117,6 +119,20 @@ class GitHubCollector(BaseCollector):
     
     def _collect_data_with_time_filter(self, start_dt: datetime, end_dt: datetime, 
                                      per_page: int = 100, **kwargs) -> List[VulnerabilityData]:
+        """采集指定时间范围的数据，包含reviewed和unreviewed两种类型"""
+        vulnerabilities = []
+        
+        # 分别采集reviewed和unreviewed类型的数据
+        for advisory_type in ['reviewed', 'unreviewed']:
+            logger.info(f"开始采集 {advisory_type} 类型的GitHub Advisory数据")
+            type_vulnerabilities = self._collect_data_by_type(start_dt, end_dt, advisory_type, per_page, **kwargs)
+            vulnerabilities.extend(type_vulnerabilities)
+            logger.info(f"{advisory_type} 类型数据采集完成，共 {len(type_vulnerabilities)} 条")
+        
+        return vulnerabilities
+    
+    def _collect_data_by_type(self, start_dt: datetime, end_dt: datetime, 
+                             advisory_type: str, per_page: int = 100, **kwargs) -> List[VulnerabilityData]:
         """采集指定时间范围的数据"""
         vulnerabilities = []
         after_cursor = None
@@ -202,8 +218,97 @@ class GitHubCollector(BaseCollector):
             
         return vulnerabilities
     
+    def _collect_data_by_type(self, start_dt: datetime, end_dt: datetime, 
+                             advisory_type: str, per_page: int = 100, **kwargs) -> List[VulnerabilityData]:
+        """采集指定类型的数据"""
+        vulnerabilities = []
+        after_cursor = None
+        total_collected = 0
+        page_num = 1
+        
+        while True:
+            url = f"{self.base_url}/advisories"
+            
+            params = {
+                'published': f">={start_dt.strftime('%Y-%m-%d')}",
+                'per_page': min(per_page, 100),
+                'sort': 'published',
+                'direction': 'desc',
+                'type': advisory_type  # 使用传入的类型
+            }
+            
+            # 使用cursor-based pagination而不是page-based
+            if after_cursor:
+                params['after'] = after_cursor
+            
+            success, advisories, should_break, next_cursor = self._make_api_request_with_cursor(url, params, page_num)
+            if not success or should_break:
+                break
+                
+            # 处理当前页数据
+            current_page_count = len(advisories)
+            total_collected += current_page_count
+            logger.info(f"已采集 {current_page_count} 条{advisory_type}数据，累计 {total_collected} 条")
+            
+            # 记录保存统计
+            new_saved_count = 0
+            skipped_existing_count = 0
+            
+            # 解析并保存当前页的数据
+            for advisory in advisories:
+                try:
+                    # 检查发布时间是否在范围内
+                    published_at = datetime.fromisoformat(advisory['published_at'].replace('Z', '+00:00'))
+                    
+                    if published_at < start_dt:
+                        continue
+                    if end_dt and published_at > end_dt:
+                        continue
+                        
+                    # 解析漏洞数据
+                    vuln_data = self._parse_advisory(advisory)
+                    if vuln_data:
+                        vulnerabilities.append(vuln_data)
+                        
+                        # 立即保存到文件，传递advisory_type信息
+                        if hasattr(self, 'file_storage') and self.file_storage:
+                            ghsa_id = advisory.get('ghsa_id')
+                            saved = self.file_storage.save_github_data_incremental(
+                                ghsa_id=ghsa_id,
+                                data=advisory,
+                                published_date=published_at,
+                                advisory_type=advisory_type  # 传递类型信息
+                            )
+                            if saved:
+                                new_saved_count += 1
+                            else:
+                                skipped_existing_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"解析{advisory_type}类型advisory失败: {e}, 数据: {advisory.get('ghsa_id', 'unknown')}")
+                    continue
+            
+            # 显示保存统计信息
+            if hasattr(self, 'file_storage') and self.file_storage:
+                if new_saved_count > 0:
+                    logger.info(f"新保存 {new_saved_count} 条{advisory_type}数据到文件")
+                if skipped_existing_count > 0:
+                    logger.info(f"跳过 {skipped_existing_count} 条已存在的{advisory_type}数据")
+            
+            # 检查是否还有更多页
+            if not next_cursor:
+                logger.info(f"{advisory_type}数据已到达最后一页")
+                break
+                
+            after_cursor = next_cursor
+            page_num += 1
+            time.sleep(0.1)  # 遵循GitHub API速率限制
+            
+        logger.info(f"{advisory_type}类型数据采集完成，总共获取 {total_collected} 条数据")
+        return vulnerabilities
+
     def _collect_all_data_in_batches(self, per_page: int = 100, **kwargs) -> List[VulnerabilityData]:
-        """分批采集所有历史数据"""
+        """分批采集所有历史数据，包含reviewed和unreviewed两种类型"""
         logger.info("开始分批采集所有历史数据")
         vulnerabilities = []
         
@@ -218,11 +323,100 @@ class GitHubCollector(BaseCollector):
             year_start = f"{year}-01-01"
             year_end = f"{year}-12-31"
             
-            year_vulnerabilities = self._collect_year_data(year_start, year_end, per_page)
-            vulnerabilities.extend(year_vulnerabilities)
+            # 分别采集reviewed和unreviewed类型的数据
+            for advisory_type in ['reviewed', 'unreviewed']:
+                logger.info(f"开始采集 {year} 年 {advisory_type} 类型的数据")
+                type_vulnerabilities = self._collect_year_data_by_type(year_start, year_end, advisory_type, per_page)
+                vulnerabilities.extend(type_vulnerabilities)
+                logger.info(f"{year} 年 {advisory_type} 类型数据采集完成，共 {len(type_vulnerabilities)} 条")
             
-            logger.info(f"{year} 年数据采集完成，共 {len(year_vulnerabilities)} 条")
+        return vulnerabilities
+    
+    def _collect_year_data_by_type(self, start_date: str, end_date: str, advisory_type: str, per_page: int = 100) -> List[VulnerabilityData]:
+        """采集指定年份指定类型的数据"""
+        vulnerabilities = []
+        after_cursor = None
+        total_collected = 0
+        page_num = 1
+        
+        while True:
+            url = f"{self.base_url}/advisories"
             
+            params = {
+                'published': f"{start_date}..{end_date}",  # 使用日期范围
+                'per_page': min(per_page, 100),
+                'sort': 'published',
+                'direction': 'desc',
+                'type': advisory_type  # 使用传入的类型
+            }
+            
+            # 使用cursor-based pagination而不是page-based
+            if after_cursor:
+                params['after'] = after_cursor
+            
+            success, advisories, should_break, next_cursor = self._make_api_request_with_cursor(url, params, page_num)
+            if not success or should_break:
+                break
+                
+            # 处理当前页数据
+            current_page_count = len(advisories)
+            total_collected += current_page_count
+            logger.info(f"{start_date} - {end_date} ({advisory_type}): 已采集 {current_page_count} 条数据，累计 {total_collected} 条")
+            
+            # 记录保存统计
+            new_saved_count = 0
+            skipped_existing_count = 0
+            
+            # 解析并保存当前页的数据
+            for advisory in advisories:
+                try:
+                    # 解析漏洞数据
+                    vuln_data = self._parse_advisory(advisory)
+                    if vuln_data:
+                        # 解析发布日期
+                        published_at_str = advisory.get('published_at', '')
+                        published_at = None
+                        if published_at_str:
+                            published_at = datetime.fromisoformat(published_at_str.replace('Z', '+00:00'))
+                        
+                        vulnerabilities.append(vuln_data)
+                        
+                        # 立即保存到文件，传递advisory_type信息
+                        if hasattr(self, 'file_storage') and self.file_storage:
+                            ghsa_id = advisory.get('ghsa_id')
+                            saved = self.file_storage.save_github_data_incremental(
+                                ghsa_id=ghsa_id,
+                                data=advisory,
+                                published_date=published_at,
+                                advisory_type=advisory_type  # 传递类型信息
+                            )
+                            if saved:
+                                new_saved_count += 1
+                            else:
+                                skipped_existing_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"解析{advisory_type}类型advisory失败: {e}, 数据: {advisory.get('ghsa_id', 'unknown')}")
+                    continue
+            
+            # 显示保存统计信息
+            if hasattr(self, 'file_storage') and self.file_storage:
+                if new_saved_count > 0:
+                    logger.info(f"新保存 {new_saved_count} 条{advisory_type}数据到文件")
+                if skipped_existing_count > 0:
+                    logger.info(f"跳过 {skipped_existing_count} 条已存在的{advisory_type}数据")
+            
+            # 检查是否有下一页
+            if not next_cursor:
+                break
+                
+            after_cursor = next_cursor
+            page_num += 1
+            
+            # 分页间隔
+            time.sleep(0.5)
+        
+        logger.info(f"{start_date} - {end_date} ({advisory_type})数据采集完成，总共获取 {total_collected} 条数据")
         return vulnerabilities
     
     def _collect_year_data(self, start_date: str, end_date: str, per_page: int = 100) -> List[VulnerabilityData]:
@@ -279,7 +473,8 @@ class GitHubCollector(BaseCollector):
                             saved = self.file_storage.save_github_data_incremental(
                                 ghsa_id=ghsa_id,
                                 data=advisory,
-                                published_date=published_date
+                                published_date=published_date,
+                                advisory_type="reviewed"  # 原有方法默认使用reviewed类型
                             )
                             if saved:
                                 new_saved_count += 1
@@ -549,6 +744,10 @@ class GitHubCollector(BaseCollector):
         """
         通过克隆GitHub Advisory Database仓库采集数据
         
+        从以下两个目录采集advisory：
+        - github-reviewed: 经过GitHub审核的安全公告
+        - unreviewed: 未经审核的安全公告
+        
         Args:
             start_dt: 开始时间
             end_dt: 结束时间
@@ -580,40 +779,53 @@ class GitHubCollector(BaseCollector):
                 
                 logger.info("仓库克隆完成，开始解析数据")
                 
-                # 解析advisory文件
-                advisories_path = repo_path / "advisories" / "github_reviewed"
-                
-                if not advisories_path.exists():
-                    logger.warning(f"Advisory目录不存在: {advisories_path}")
-                    return []
+                # 要处理的advisory目录列表
+                advisory_dirs = [
+                    ("github-reviewed", repo_path / "advisories" / "github-reviewed"),
+                    ("unreviewed", repo_path / "advisories" / "unreviewed")
+                ]
                 
                 total_files = 0
                 processed_files = 0
                 
-                # 遍历所有.json文件
-                for json_file in advisories_path.rglob("*.json"):
-                    total_files += 1
+                # 处理每个advisory目录
+                for dir_name, advisories_path in advisory_dirs:
+                    if not advisories_path.exists():
+                        logger.warning(f"Advisory目录不存在: {advisories_path}")
+                        continue
                     
-                    try:
-                        with open(json_file, 'r', encoding='utf-8') as f:
-                            advisory_data = json.load(f)
+                    logger.info(f"正在处理目录: {dir_name}")
+                    dir_files = 0
+                    dir_processed = 0
+                    
+                    # 遍历所有.json文件
+                    for json_file in advisories_path.rglob("*.json"):
+                        total_files += 1
+                        dir_files += 1
                         
-                        # 检查发布时间是否在范围内
-                        published_at = advisory_data.get('published', '')
-                        if published_at:
-                            published_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
-                            if not (start_dt <= published_date <= end_dt):
-                                continue
-                        
-                        vuln = self._parse_database_advisory(advisory_data, json_file)
-                        if vuln:
-                            vulnerabilities.append(vuln)
-                            processed_files += 1
+                        try:
+                            with open(json_file, 'r', encoding='utf-8') as f:
+                                advisory_data = json.load(f)
                             
-                    except Exception as e:
-                        self._handle_error(e, f"解析Advisory文件失败: {json_file}")
+                            # 检查发布时间是否在范围内
+                            published_at = advisory_data.get('published', '')
+                            if published_at:
+                                published_date = datetime.fromisoformat(published_at.replace('Z', '+00:00'))
+                                if not (start_dt <= published_date <= end_dt):
+                                    continue
+                            
+                            vuln = self._parse_database_advisory(advisory_data, json_file, dir_name)
+                            if vuln:
+                                vulnerabilities.append(vuln)
+                                processed_files += 1
+                                dir_processed += 1
+                                
+                        except Exception as e:
+                            self._handle_error(e, f"解析Advisory文件失败: {json_file}")
+                    
+                    logger.info(f"目录 {dir_name} 处理完成，处理文件 {dir_processed}/{dir_files}")
                 
-                logger.info(f"数据库采集完成，处理文件 {processed_files}/{total_files}")
+                logger.info(f"数据库采集完成，总共处理文件 {processed_files}/{total_files}")
                 
         except subprocess.TimeoutExpired:
             logger.error("克隆仓库超时")
@@ -914,8 +1126,14 @@ class GitHubCollector(BaseCollector):
             raw_data=advisory
         )
     
-    def _parse_database_advisory(self, advisory: Dict[str, Any], file_path: Path) -> Optional[VulnerabilityData]:
-        """解析Advisory Database中的JSON文件数据"""
+    def _parse_database_advisory(self, advisory: Dict[str, Any], file_path: Path, dir_type: str = "github-reviewed") -> Optional[VulnerabilityData]:
+        """解析Advisory Database中的JSON文件数据
+        
+        Args:
+            advisory: Advisory JSON数据
+            file_path: 文件路径
+            dir_type: 目录类型 ("github-reviewed" 或 "unreviewed")
+        """
         # 从文件路径或内容中获取ID
         ghsa_id = advisory.get('id', '') or advisory.get('aliases', [{}])[0] if advisory.get('aliases') else ''
         
@@ -1010,6 +1228,11 @@ class GitHubCollector(BaseCollector):
                 cve_id = alias
                 break
         
+        # 在raw_data中添加目录类型信息
+        enhanced_raw_data = advisory.copy()
+        enhanced_raw_data['_advisory_type'] = dir_type
+        enhanced_raw_data['_source_path'] = str(file_path)
+        
         return VulnerabilityData(
             id=ghsa_id,
             cve_id=cve_id,
@@ -1024,5 +1247,5 @@ class GitHubCollector(BaseCollector):
             weaknesses=weaknesses,
             affected_products=affected_products,
             references=references,
-            raw_data=advisory
+            raw_data=enhanced_raw_data
         )

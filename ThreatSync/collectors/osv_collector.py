@@ -1,212 +1,150 @@
 """
-OSV (Open Source Vulnerabilities) 数据采集器
+OSV 漏洞收集器
+简单的下载解压方式：下载ZIP包，解压到相应文件夹，不进行JSON解析
 """
-import json
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+
+import logging
+import os
+import requests
+import zipfile
+from pathlib import Path
+from typing import List
 
 from .base_collector import BaseCollector
-from ..models.vulnerability import (
-    VulnerabilityData, DataSource, VulnerabilityStatus,
-    CVSSScore, Reference, Weakness, AffectedProduct
-)
-from ..utils import logger, RequestsUtil
+from ..models.vulnerability import VulnerabilityData, DataSource
+from ..utils import logger
 
 
 class OSVCollector(BaseCollector):
-    """OSV数据采集器"""
+    """OSV数据采集器 - 简单的ZIP下载解压方式"""
     
     def _get_source(self) -> DataSource:
         return DataSource.OSV
     
     def __init__(self, config_manager):
         super().__init__(config_manager)
-        self.api_config = config_manager.get_api_config('osv')
-        self.base_url = self.api_config.get('base_url', 'https://api.osv.dev/v1')
-        self.http_client = RequestsUtil(config_manager.get_crawler_config())
+        self.config_manager = config_manager
+        
+        # 获取项目根目录
+        self.project_root = self._get_project_root()
+        
+        # OSV数据存储路径
+        self.osv_dir = self.project_root / "data" / "structured" / "osv" / "zip"
+        self.temp_dir = self.project_root / "temp_osv_download"
+        
+        # 创建目录
+        self.osv_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        
+    def _get_project_root(self) -> Path:
+        """获取项目根目录"""
+        current_file = Path(__file__).resolve()
+        current_dir = current_file.parent
+        while current_dir.parent != current_dir:
+            if (current_dir / "README.md").exists():
+                return current_dir
+            current_dir = current_dir.parent
+        return current_file.parent.parent.parent
     
-    def collect(self, ecosystems: List[str] = None, page_size: int = 1000, 
-                collect_all: bool = False, **kwargs) -> List[VulnerabilityData]:
+    def collect(self, ecosystems: List[str] = None, **kwargs) -> List[VulnerabilityData]:
         """
-        采集OSV数据
+        收集OSV数据 - 仅下载和解压，不解析JSON文件
         
         Args:
-            ecosystems: 生态系统列表，如['PyPI', 'npm', 'Go', 'Maven']
-            page_size: 页面大小
-            collect_all: 是否采集所有生态系统（忽略ecosystems参数）
+            ecosystems: 要下载的生态系统列表，如果为None则下载所有
+            
+        Returns:
+            空列表（因为不进行解析，直接返回空列表）
         """
-        if collect_all:
-            # 采集所有支持的生态系统
-            ecosystems = ['PyPI', 'npm', 'Go', 'Maven', 'NuGet', 'RubyGems', 'crates.io', 
-                         'Packagist', 'ConanCenter', 'Rocky Linux', 'AlmaLinux', 'Ubuntu',
-                         'Debian', 'Alpine', 'SUSE', 'Red Hat', 'Android', 'GSD']
-            logger.info("开始采集OSV所有生态系统数据")
-        elif ecosystems is None:
-            ecosystems = ['PyPI', 'npm', 'Go', 'Maven', 'NuGet', 'RubyGems', 'crates.io']
+        logger.info("开始采集 OSV 数据")
         
-        logger.info(f"开始采集OSV数据，生态系统: {ecosystems}")
-        
-        vulnerabilities = []
-        
-        for ecosystem in ecosystems:
-            try:
-                logger.info(f"采集 {ecosystem} 生态系统的漏洞数据")
-                ecosystem_vulns = self._collect_ecosystem_vulnerabilities(ecosystem, page_size)
-                vulnerabilities.extend(ecosystem_vulns)
-            except Exception as e:
-                self._handle_error(e, f"采集 {ecosystem} 生态系统数据失败")
-        
-        logger.info(f"OSV数据采集完成，共收集到{len(vulnerabilities)}个漏洞")
-        return vulnerabilities
+        try:
+            # 如果没有指定生态系统，先获取完整列表
+            if ecosystems is None:
+                ecosystems = self._get_available_ecosystems()
+            
+            logger.info(f"准备下载的生态系统: {ecosystems}")
+            
+            total_files = 0
+            
+            for ecosystem in ecosystems:
+                logger.info(f"下载并解压 {ecosystem} 生态系统")
+                file_count = self._download_and_extract_ecosystem(ecosystem)
+                total_files += file_count
+                logger.info(f"{ecosystem} 生态系统处理完成，包含 {file_count} 个JSON文件")
+            
+            logger.info(f"OSV数据下载完成，共获得{total_files}个JSON文件（未解析）")
+            logger.info("OSV数据已保存到本地，可通过文件系统直接访问")
+            return []  # 不解析，返回空列表
+            
+        except Exception as e:
+            logger.error(f"OSV数据下载失败: {e}")
+            return []
     
-    def _collect_ecosystem_vulnerabilities(self, ecosystem: str, page_size: int) -> List[VulnerabilityData]:
-        """采集特定生态系统的漏洞数据"""
-        vulnerabilities = []
-        page_token = ""
-        
-        while True:
-            url = f"{self.base_url}/query"
+    def _get_available_ecosystems(self) -> List[str]:
+        """获取可用的生态系统列表"""
+        try:
+            logger.info("获取OSV生态系统列表")
+            url = "https://osv-vulnerabilities.storage.googleapis.com/ecosystems.txt"
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
             
-            query_data = {
-                "query": {
-                    "ecosystem": ecosystem
-                },
-                "page_size": page_size
-            }
+            ecosystems = [line.strip() for line in response.text.splitlines() if line.strip()]
+            logger.info(f"获取到 {len(ecosystems)} 个生态系统")
+            return ecosystems
             
-            if page_token:
-                query_data["page_token"] = page_token
-            
-            try:
-                response = self.http_client.post(url, json=query_data)
-                data = response.json()
-                
-                vulns = data.get('vulns', [])
-                if not vulns:
-                    break
-                
-                for vuln_data in vulns:
-                    try:
-                        vuln = self._parse_osv_vulnerability(vuln_data)
-                        if vuln:
-                            vulnerabilities.append(vuln)
-                    except Exception as e:
-                        self._handle_error(e, f"解析OSV漏洞失败: {vuln_data.get('id', 'unknown')}")
-                
-                # 检查是否有下一页
-                page_token = data.get('next_page_token', '')
-                if not page_token:
-                    break
-                    
-            except Exception as e:
-                self._handle_error(e, f"请求OSV API失败，生态系统={ecosystem}")
-                break
-        
-        return vulnerabilities
+        except Exception as e:
+            logger.error(f"获取生态系统列表失败: {e}")
+            # 返回一些常见的生态系统作为备选
+            return ["npm", "PyPI", "Maven", "Go", "crates.io", "NuGet"]
     
-    def _parse_osv_vulnerability(self, vuln_data: Dict[str, Any]) -> Optional[VulnerabilityData]:
-        """解析OSV漏洞数据"""
-        vuln_id = vuln_data.get('id', '')
-        if not vuln_id:
-            return None
+    def _download_and_extract_ecosystem(self, ecosystem: str) -> int:
+        """
+        下载并解压单个生态系统的数据，不进行解析
         
-        # 基本信息
-        summary = vuln_data.get('summary', '')
-        details = vuln_data.get('details', '')
-        
-        # 时间信息
-        published_date = None
-        modified_date = None
-        
-        if vuln_data.get('published'):
-            published_date = datetime.fromisoformat(
-                vuln_data['published'].replace('Z', '+00:00')
-            )
-        
-        if vuln_data.get('modified'):
-            modified_date = datetime.fromisoformat(
-                vuln_data['modified'].replace('Z', '+00:00')
-            )
-        
-        # 严重性信息
-        severity = "UNKNOWN"
-        cvss_scores = []
-        
-        for sev in vuln_data.get('severity', []):
-            if sev.get('type') == 'CVSS_V3':
-                score_value = sev.get('score', 0.0)
-                if isinstance(score_value, str):
-                    # 解析CVSS向量字符串中的分数
-                    try:
-                        score_value = float(score_value.split('/')[0])
-                    except:
-                        score_value = 0.0
-                
-                cvss_score = CVSSScore(
-                    version="3.x",
-                    base_score=score_value,
-                    vector_string=str(sev.get('score', '')),
-                    severity=self._parse_severity(score_value)
-                )
-                cvss_scores.append(cvss_score)
-                severity = cvss_score.severity
-        
-        # 别名（包括CVE ID）
-        cve_id = None
-        for alias in vuln_data.get('aliases', []):
-            if alias.startswith('CVE-'):
-                cve_id = alias
-                break
-        
-        # 参考链接
-        references = []
-        for ref in vuln_data.get('references', []):
-            url = ref.get('url', '')
-            if url:
-                references.append(Reference(
-                    url=url,
-                    title=ref.get('title', ''),
-                    source='OSV',
-                    tags=ref.get('type', '').split() if ref.get('type') else []
-                ))
-        
-        # 受影响的产品
-        affected_products = []
-        for affected in vuln_data.get('affected', []):
-            package = affected.get('package', {})
-            ecosystem = package.get('ecosystem', '')
-            name = package.get('name', '')
+        Args:
+            ecosystem: 生态系统名称
             
-            # 处理版本范围
-            for version_range in affected.get('ranges', []):
-                events = version_range.get('events', [])
-                version_info = "unknown"
-                
-                for event in events:
-                    if 'introduced' in event:
-                        version_info = f">= {event['introduced']}"
-                    elif 'fixed' in event:
-                        version_info += f", < {event['fixed']}"
-                
-                affected_products.append(AffectedProduct(
-                    vendor=ecosystem,
-                    product=name,
-                    version_affected=version_info
-                ))
-        
-        return VulnerabilityData(
-            id=vuln_id,
-            cve_id=cve_id,
-            title=summary or vuln_id,
-            description=details,
-            status=VulnerabilityStatus.PUBLISHED,
-            severity=severity,
-            source=DataSource.OSV,
-            published_date=published_date or datetime.now(),
-            modified_date=modified_date,
-            cvss_scores=cvss_scores,
-            weaknesses=[],  # OSV通常不提供CWE信息
-            affected_products=affected_products,
-            references=references,
-            raw_data=vuln_data
-        )
+        Returns:
+            解压后的JSON文件数量
+        """
+        try:
+            # 构建下载URL
+            zip_url = f"https://osv-vulnerabilities.storage.googleapis.com/{ecosystem}/all.zip"
+            zip_file_path = self.temp_dir / f"{ecosystem}-all.zip"
+            ecosystem_dir = self.osv_dir / ecosystem
+            
+            # 创建生态系统目录
+            ecosystem_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 下载ZIP文件
+            logger.info(f"下载 {ecosystem} 数据包")
+            response = requests.get(zip_url, stream=True, timeout=300)
+            response.raise_for_status()
+            
+            # 保存ZIP文件
+            with open(zip_file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            logger.info(f"{ecosystem} 数据包下载完成")
+            
+            # 解压ZIP文件
+            logger.info(f"解压 {ecosystem} 数据包")
+            with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                zip_ref.extractall(ecosystem_dir)
+            
+            # 清理ZIP文件
+            zip_file_path.unlink()
+            
+            # 统计JSON文件数量
+            json_files = list(ecosystem_dir.glob("*.json"))
+            file_count = len(json_files)
+            logger.info(f"在 {ecosystem} 中解压了 {file_count} 个JSON文件")
+            
+            return file_count
+            
+        except Exception as e:
+            logger.error(f"处理生态系统 {ecosystem} 失败: {e}")
+            return 0

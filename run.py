@@ -172,6 +172,10 @@ class ThreatSyncRunner:
             filtered_sources = [s for s in sources if s in valid_sources]
             if filtered_sources:
                 args.extend(["--sources"] + filtered_sources)
+                
+                # OSV数据源说明
+                if 'osv' in filtered_sources:
+                    print("\033[32m✓ OSV将自动下载ZIP包并解压到相应目录\033[0m")
             else:
                 print("\033[33m⚠ 无效的数据源，将采集所有数据源\033[0m")
         
@@ -229,10 +233,16 @@ class ThreatSyncRunner:
 \033[33m示例:\033[0m
   python run.py                                    # 交互式启动
   python run.py -m once -s nvd github              # 采集指定数据源
+  python run.py -m once -s osv                     # 采集OSV本地数据
   python run.py --stats                            # 显示统计信息
   python run.py -m schedule                        # 启动定时调度
   python run.py -e output.json -s nvd              # 导出NVD数据
   python run.py --cleanup                          # 清理过期文件
+
+\033[33mOSV数据源说明:\033[0m
+  OSV数据源支持自动下载ZIP包并解压到指定目录
+  数据存储路径: data/structured/osv/zip/{ecosystem}/
+  可指定生态系统，如不指定则下载所有可用生态系统
 
 \033[33m直接传递参数给main.py:\033[0m
   python run.py -- --custom-arg value              # 传递自定义参数
